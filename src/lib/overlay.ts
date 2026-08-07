@@ -1,4 +1,4 @@
-import sharp, { type Sharp } from "sharp";
+import sharp from "sharp";
 import type { BoundingBox, CardFormData, FieldStyle, LayoutMap, StyleMap } from "./types";
 
 const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
@@ -67,47 +67,86 @@ export function scaleLayout(
   return scaled;
 }
 
-async function sampleBackgroundColor(
-  image: Sharp,
-  box: BoundingBox,
-  imageWidth: number,
-  imageHeight: number
-): Promise<{ r: number; g: number; b: number }> {
-  const samples: { r: number; g: number; b: number }[] = [];
-  const pad = 2;
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b]
+    .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
 
-  const samplePoints = [
-    { x: Math.max(0, box.x - pad), y: box.y + Math.floor(box.height / 2) },
-    { x: Math.min(imageWidth - 1, box.x + box.width + pad), y: box.y + Math.floor(box.height / 2) },
-    { x: box.x + Math.floor(box.width / 2), y: Math.max(0, box.y - pad) },
-    { x: box.x + Math.floor(box.width / 2), y: Math.min(imageHeight - 1, box.y + box.height + pad) },
-  ];
+function luminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
 
-  for (const point of samplePoints) {
-    try {
-      const { data } = await image
-        .clone()
-        .extract({ left: point.x, top: point.y, width: 1, height: 1 })
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      samples.push({ r: data[0], g: data[1], b: data[2] });
-    } catch {
-      // Ignore edge sample failures.
+/**
+ * Sample ink color from darkest pixels inside the marked box (original text color).
+ */
+function sampleInkColor(
+  data: Buffer,
+  width: number,
+  channels: number,
+  box: BoundingBox
+): string {
+  const pixels: { r: number; g: number; b: number; lum: number }[] = [];
+
+  for (let y = box.y; y < box.y + box.height; y++) {
+    for (let x = box.x; x < box.x + box.width; x++) {
+      const idx = (y * width + x) * channels;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      pixels.push({ r, g, b, lum: luminance(r, g, b) });
     }
   }
 
-  if (samples.length === 0) return { r: 240, g: 240, b: 240 };
+  if (pixels.length === 0) return "#1a1a1a";
 
-  const avg = samples.reduce(
-    (acc, sample) => ({ r: acc.r + sample.r, g: acc.g + sample.g, b: acc.b + sample.b }),
+  pixels.sort((a, b) => a.lum - b.lum);
+  const inkCount = Math.max(5, Math.floor(pixels.length * 0.12));
+  const ink = pixels.slice(0, inkCount);
+  const avg = ink.reduce(
+    (acc, p) => ({ r: acc.r + p.r, g: acc.g + p.g, b: acc.b + p.b }),
     { r: 0, g: 0, b: 0 }
   );
 
-  return {
-    r: Math.round(avg.r / samples.length),
-    g: Math.round(avg.g / samples.length),
-    b: Math.round(avg.b / samples.length),
-  };
+  return rgbToHex(avg.r / ink.length, avg.g / ink.length, avg.b / ink.length);
+}
+
+/**
+ * Texture-preserving erase: vertically blend pixels from the rows just above/below
+ * the marked box so guilloche/security patterns stay intact.
+ */
+function eraseBoxWithTextureClone(
+  data: Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  box: BoundingBox
+): void {
+  const topY = Math.max(0, box.y - 1);
+  const bottomY = Math.min(height - 1, box.y + box.height);
+  const leftX = Math.max(0, box.x - 1);
+  const rightX = Math.min(width - 1, box.x + box.width);
+
+  for (let y = box.y; y < box.y + box.height; y++) {
+    const ty = (y - box.y) / Math.max(box.height - 1, 1);
+
+    for (let x = box.x; x < box.x + box.width; x++) {
+      const tx = (x - box.x) / Math.max(box.width - 1, 1);
+      const idx = (y * width + x) * channels;
+
+      const topIdx = (topY * width + x) * channels;
+      const bottomIdx = (bottomY * width + x) * channels;
+      const leftIdx = (y * width + leftX) * channels;
+      const rightIdx = (y * width + rightX) * channels;
+
+      for (let c = 0; c < 3; c++) {
+        const vertical = data[topIdx + c] * (1 - ty) + data[bottomIdx + c] * ty;
+        const horizontal = data[leftIdx + c] * (1 - tx) + data[rightIdx + c] * tx;
+        // Prefer vertical clone for ID text lines; mix a little horizontal for edges.
+        data[idx + c] = Math.round(vertical * 0.85 + horizontal * 0.15);
+      }
+    }
+  }
 }
 
 function createStyledTextSvg(
@@ -118,10 +157,10 @@ function createStyledTextSvg(
   style: FieldStyle
 ): string {
   const maxByHeight = Math.round(box.height * 0.78);
-  const maxByWidth = Math.round(box.width / Math.max(text.length * 0.52, 1));
-  const fontSize = Math.max(9, Math.min(style.fontSize, maxByHeight, maxByWidth));
+  const maxByWidth = Math.round(box.width / Math.max(text.length * 0.55, 1));
+  const fontSize = Math.max(10, Math.min(style.fontSize || maxByHeight, maxByHeight, maxByWidth));
   const x = box.x + Math.max(2, Math.round(box.width * 0.02));
-  const y = box.y + Math.round((box.height + fontSize * 0.72) / 2);
+  const y = box.y + Math.round(box.height * 0.5 + fontSize * 0.35);
 
   return `
     <svg width="${imageWidth}" height="${imageHeight}" xmlns="http://www.w3.org/2000/svg">
@@ -133,15 +172,50 @@ function createStyledTextSvg(
         font-weight="${style.fontWeight}"
         letter-spacing="${style.letterSpacing}px"
         fill="${escapeXml(style.color)}"
-        fill-opacity="${style.opacity}"
+        fill-opacity="${Math.min(1, Math.max(0.88, style.opacity))}"
         text-anchor="start"
       >${escapeXml(text)}</text>
     </svg>
   `;
 }
 
+export async function sampleLocalStyles(
+  imageInput: string,
+  layout: LayoutMap,
+  sourceWidth: number,
+  sourceHeight: number,
+  aiStyles: StyleMap = {}
+): Promise<StyleMap> {
+  const buffer = await resolveImageBuffer(imageInput);
+  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const width = info.width ?? sourceWidth;
+  const height = info.height ?? sourceHeight;
+  const channels = info.channels ?? 4;
+  const scaled = scaleLayout(layout, sourceWidth, sourceHeight, width, height);
+  const styles: StyleMap = {};
+
+  for (const key of FIELD_KEYS) {
+    const rawBox = scaled[key];
+    if (!rawBox) continue;
+    const box = clampBox(rawBox, width, height);
+    const ink = sampleInkColor(data, width, channels, box);
+    const ai = aiStyles[key];
+
+    styles[key] = {
+      color: ink,
+      fontSize: ai?.fontSize && ai.fontSize > 0 ? ai.fontSize : Math.max(10, Math.round(box.height * 0.72)),
+      fontWeight: ai?.fontWeight && ai.fontWeight > 0 ? ai.fontWeight : 600,
+      fontFamily: ai?.fontFamily || "Arial, Helvetica, sans-serif",
+      letterSpacing: ai?.letterSpacing ?? 0,
+      opacity: ai?.opacity ?? 0.96,
+    };
+  }
+
+  return styles;
+}
+
 /**
- * Local fallback erase if AI inpaint fails: fill each box with sampled background color.
+ * Step 2 (local): erase marked text while preserving nearby texture/pattern.
  */
 export async function eraseFieldsLocally(
   imageInput: string,
@@ -150,39 +224,35 @@ export async function eraseFieldsLocally(
   sourceHeight: number
 ): Promise<string> {
   const originalBuffer = await resolveImageBuffer(imageInput);
-  const base = sharp(originalBuffer).ensureAlpha();
-  const metadata = await base.metadata();
-  const imageWidth = metadata.width ?? sourceWidth;
-  const imageHeight = metadata.height ?? sourceHeight;
-  const scaledLayout = scaleLayout(layout, sourceWidth, sourceHeight, imageWidth, imageHeight);
+  const { data, info } = await sharp(originalBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
 
-  const fillLayers: { input: Buffer; left: number; top: number }[] = [];
+  const width = info.width ?? sourceWidth;
+  const height = info.height ?? sourceHeight;
+  const channels = info.channels ?? 4;
+  const scaled = scaleLayout(layout, sourceWidth, sourceHeight, width, height);
+  const pixels = Buffer.from(data);
 
   for (const key of FIELD_KEYS) {
-    const rawBox = scaledLayout[key];
+    const rawBox = scaled[key];
     if (!rawBox) continue;
-    const box = clampBox(rawBox, imageWidth, imageHeight);
-    const bg = await sampleBackgroundColor(base, box, imageWidth, imageHeight);
-    const fill = await sharp({
-      create: {
-        width: box.width,
-        height: box.height,
-        channels: 3,
-        background: bg,
-      },
-    })
-      .png()
-      .toBuffer();
-    fillLayers.push({ input: fill, left: box.x, top: box.y });
+    const box = clampBox(rawBox, width, height);
+    eraseBoxWithTextureClone(pixels, width, height, channels, box);
   }
 
-  const erased = await base.composite(fillLayers).png().toBuffer();
+  const erased = await sharp(pixels, {
+    raw: { width, height, channels: channels as 3 | 4 },
+  })
+    .png()
+    .toBuffer();
+
   return `data:image/png;base64,${erased.toString("base64")}`;
 }
 
 /**
- * Step 3: Render exact typed text with extracted styles.
- * Step 4: Soften the text layer slightly so it looks printed (mild blur + opacity).
+ * Steps 3 + 4: draw exact typed text with sampled styles, then lightly blend.
  */
 export async function renderStyledText(
   imageInput: string,
@@ -209,19 +279,12 @@ export async function renderStyledText(
 
     const box = clampBox(rawBox, imageWidth, imageHeight);
     const svg = createStyledTextSvg(value, box, imageWidth, imageHeight, style);
-    const svgBuffer = Buffer.from(svg);
-
-    // Soften text slightly so it blends into printed card texture.
-    const softened = await sharp(svgBuffer)
-      .blur(0.35)
-      .png()
-      .toBuffer();
-
-    textLayers.push(softened);
+    // Keep text crisp — no blur that can make letters disappear.
+    textLayers.push(Buffer.from(svg));
   }
 
   if (textLayers.length === 0) {
-    throw new Error("No styled text layers could be rendered.");
+    throw new Error("No styled text layers could be rendered. Remark field boxes and try again.");
   }
 
   let composed = await base
@@ -229,13 +292,13 @@ export async function renderStyledText(
     .png()
     .toBuffer();
 
-  // Very light noise blend to reduce "digital overlay" look.
+  // Very subtle print-like grain (does not erase text).
   const noise = await sharp({
     create: {
       width: imageWidth,
       height: imageHeight,
       channels: 4,
-      background: { r: 128, g: 128, b: 128, alpha: 0.03 },
+      background: { r: 128, g: 128, b: 128, alpha: 0.02 },
     },
   })
     .png()

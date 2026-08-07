@@ -1,11 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
-import {
-  extractFieldStyles,
-  eraseFieldsWithOpenRouter,
-  enhanceImageWithOpenRouter,
-} from "@/lib/openrouter";
-import { eraseFieldsLocally, renderStyledText } from "@/lib/overlay";
+import { extractFieldStyles, enhanceImageWithOpenRouter } from "@/lib/openrouter";
+import { eraseFieldsLocally, renderStyledText, sampleLocalStyles } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -54,19 +50,31 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 1: Extract style (font/color/size) from each marked region.
-    const styles = await extractFieldStyles(sanitizedImage, layout);
-
-    // Step 2: AI inpaint — erase old text only (local fill fallback).
-    let erasedImage: string;
+    // Step 1: Extract style — AI hints + local ink-color sampling from your boxes.
+    let aiStyles = {};
     try {
-      erasedImage = await eraseFieldsWithOpenRouter(sanitizedImage, layout);
+      aiStyles = await extractFieldStyles(sanitizedImage, layout);
     } catch {
-      erasedImage = await eraseFieldsLocally(sanitizedImage, layout, sourceWidth, sourceHeight);
+      aiStyles = {};
     }
+    const styles = await sampleLocalStyles(
+      sanitizedImage,
+      layout,
+      sourceWidth,
+      sourceHeight,
+      aiStyles
+    );
 
-    // Step 3 + 4: Render exact typed text with extracted styles, then soften/blend.
-    // scaleLayout inside renderStyledText maps original mark boxes onto the erased image size.
+    // Step 2: LOCAL texture-preserving erase (no AI inpaint).
+    // AI erase was destroying guilloche patterns and leaving artifacts.
+    const erasedImage = await eraseFieldsLocally(
+      sanitizedImage,
+      layout,
+      sourceWidth,
+      sourceHeight
+    );
+
+    // Step 3 + 4: Render exact typed text with sampled styles, then light grain blend.
     let resultImage = await renderStyledText(
       erasedImage,
       fields,

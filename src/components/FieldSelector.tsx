@@ -165,7 +165,8 @@ export default function FieldSelector({ image, layout, onChange }: Props) {
       <div>
         <h2 className="text-lg font-semibold text-slate-900">Mark Fields on Image</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Select a field below, then drag a box over that text on the image. Marked: {markedCount}/5
+          Select a field, then drag tightly around ONLY the value text (not labels like ISS/EXP).
+          Marked: {markedCount}/5
         </p>
       </div>
 
