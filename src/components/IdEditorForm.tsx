@@ -5,7 +5,7 @@ import { Upload, Download, Loader2, ImageIcon, AlertTriangle, Wand2, X } from "l
 import FieldSelector from "@/components/FieldSelector";
 import type { CardFormData, GenerateResponse, LayoutMap } from "@/lib/types";
 
-const FREE_TRIAL_KEY = "sniffer_id_guest_used_v6";
+const FREE_TRIAL_KEY = "sniffer_id_guest_used_v7";
 const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
 
 function getInitialGuestUsed(): boolean {

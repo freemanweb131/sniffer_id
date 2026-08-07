@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
-import { extractFieldStyles } from "@/lib/openrouter";
-import { eraseFieldsLocally, renderStyledText, sampleLocalStyles } from "@/lib/overlay";
+import { applyDirectEdit } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -50,35 +49,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 1: style extraction (AI optional + local ink sampling).
-    let aiStyles = {};
-    try {
-      aiStyles = await extractFieldStyles(sanitizedImage, layout);
-    } catch {
-      aiStyles = {};
-    }
-    const styles = await sampleLocalStyles(
+    // Direct pipeline only: sample colors → solid erase → glyph-path text overlay.
+    // No AI inpaint/write (those caused smear + barcode artifacts on Vercel).
+    const resultImage = await applyDirectEdit(
       sanitizedImage,
-      layout,
-      sourceWidth,
-      sourceHeight,
-      aiStyles
-    );
-
-    // Step 2: local strip-fill erase (keeps coordinates exact, avoids AI smear).
-    const erasedImage = await eraseFieldsLocally(
-      sanitizedImage,
-      layout,
-      sourceWidth,
-      sourceHeight
-    );
-
-    // Step 3+4: crisp deterministic text overlay. No AI post-enhance (it was destroying results).
-    const resultImage = await renderStyledText(
-      erasedImage,
       fields,
       layout,
-      styles,
       sourceWidth,
       sourceHeight
     );

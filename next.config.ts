@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // Ensure bundled fonts are included in the Vercel serverless function.
+  outputFileTracingIncludes: {
+    "/api/generate": ["./assets/fonts/**/*"],
+  },
 };
 
 export default nextConfig;
