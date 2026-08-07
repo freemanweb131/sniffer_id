@@ -53,7 +53,14 @@ async function callImageGenerationApi(
       model,
       prompt,
       n: 1,
-      input_references: [imageDataUri],
+      input_references: [
+        {
+          type: "image_url",
+          image_url: {
+            url: imageDataUri,
+          },
+        },
+      ],
       output_format: "png",
     }),
   });
