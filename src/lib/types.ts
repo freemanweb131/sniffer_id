@@ -6,9 +6,19 @@ export interface CardFormData {
   address: string;
 }
 
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type LayoutMap = Partial<Record<keyof CardFormData, BoundingBox>>;
+
 export interface GenerateRequest {
   image: string;
   fields: CardFormData;
+  layout: LayoutMap;
   enhanceClarity: boolean;
 }
 

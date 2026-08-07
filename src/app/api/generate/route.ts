@@ -1,10 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import {
-  analyzeCardLayout,
-  eraseFieldsWithOpenRouter,
-  enhanceImageWithOpenRouter,
-} from "@/lib/openrouter";
-import { overlayTextOnImage } from "@/lib/overlay";
+import { applyHybridEdit } from "@/lib/overlay";
+import { enhanceImageWithOpenRouter } from "@/lib/openrouter";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -43,23 +39,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       );
     }
 
-    const { image, fields, enhanceClarity } = parseResult.data;
+    const { image, fields, layout, enhanceClarity } = parseResult.data;
     const sanitizedImage = sanitizeImageDataUri(image);
 
-    // Step 1: Detect field bounding boxes with a vision model.
-    const layout = await analyzeCardLayout(sanitizedImage);
+    // Infer source size from the uploaded image metadata via sharp inside applyHybridEdit.
+    // Pass layout pixel coordinates as provided by the client (relative to original image).
+    const meta = await import("sharp").then(async ({ default: sharp }) => {
+      const base64 = sanitizedImage.split(",")[1];
+      const buffer = Buffer.from(base64, "base64");
+      return sharp(buffer).metadata();
+    });
 
-    if (Object.keys(layout).length === 0) {
-      throw new Error("Could not detect any card fields. Try uploading a clearer image.");
+    const sourceWidth = meta.width ?? 0;
+    const sourceHeight = meta.height ?? 0;
+    if (!sourceWidth || !sourceHeight) {
+      throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 2: Erase the old text inside those bounding boxes.
-    const erasedImage = await eraseFieldsWithOpenRouter(sanitizedImage, layout);
+    // Deterministic pipeline: erase marked regions + draw exact typed text.
+    let resultImage = await applyHybridEdit(
+      sanitizedImage,
+      fields,
+      layout,
+      sourceWidth,
+      sourceHeight
+    );
 
-    // Step 3: Overlay the new text programmatically with sharp.
-    let resultImage = await overlayTextOnImage(erasedImage, fields, layout);
-
-    // Step 4: Optional clarity enhancement.
     if (enhanceClarity) {
       resultImage = await enhanceImageWithOpenRouter(resultImage);
     }

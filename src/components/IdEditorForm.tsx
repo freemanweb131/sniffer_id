@@ -2,9 +2,11 @@
 
 import { useState, useRef, useCallback } from "react";
 import { Upload, Download, Loader2, ImageIcon, AlertTriangle, Wand2, X } from "lucide-react";
-import type { CardFormData, GenerateResponse } from "@/lib/types";
+import FieldSelector from "@/components/FieldSelector";
+import type { CardFormData, GenerateResponse, LayoutMap } from "@/lib/types";
 
-const FREE_TRIAL_KEY = "sniffer_id_guest_used";
+const FREE_TRIAL_KEY = "sniffer_id_guest_used_v2";
+const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
 
 function getInitialGuestUsed(): boolean {
   if (typeof window === "undefined") return false;
@@ -22,6 +24,7 @@ const initialFields: CardFormData = {
 export default function IdEditorForm() {
   const [image, setImage] = useState<string | null>(null);
   const [fields, setFields] = useState<CardFormData>(initialFields);
+  const [layout, setLayout] = useState<LayoutMap>({});
   const [enhanceClarity, setEnhanceClarity] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
@@ -32,6 +35,7 @@ export default function IdEditorForm() {
   const handleFileChange = useCallback((file: File | null) => {
     setError(null);
     setResultImage(null);
+    setLayout({});
 
     if (!file) return;
 
@@ -73,6 +77,8 @@ export default function IdEditorForm() {
     setFields((prev) => ({ ...prev, [key]: value }));
   };
 
+  const allBoxesMarked = FIELD_KEYS.every((key) => layout[key]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -83,8 +89,13 @@ export default function IdEditorForm() {
       return;
     }
 
+    if (!allBoxesMarked) {
+      setError("Please mark all 5 fields on the image (NAME, DOB, ISS, EXP, ADDRESS) by dragging boxes.");
+      return;
+    }
+
     if (guestUsed) {
-      setError("Guest trial already used. Please sign in to continue.");
+      setError("Guest trial already used. Clear localStorage key sniffer_id_guest_used to test again.");
       return;
     }
 
@@ -94,7 +105,7 @@ export default function IdEditorForm() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image, fields, enhanceClarity }),
+        body: JSON.stringify({ image, fields, layout, enhanceClarity }),
       });
 
       const data: GenerateResponse = await response.json();
@@ -104,10 +115,8 @@ export default function IdEditorForm() {
       }
 
       setResultImage(data.image ?? null);
-      if (!guestUsed) {
-        setGuestUsed(true);
-        localStorage.setItem(FREE_TRIAL_KEY, "true");
-      }
+      setGuestUsed(true);
+      localStorage.setItem(FREE_TRIAL_KEY, "true");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -141,7 +150,7 @@ export default function IdEditorForm() {
           ID Card Mockup Editor
         </h1>
         <p className="mt-2 text-slate-600">
-          Generate design mockups and authorized test IDs from a template image.
+          Mark each field on the image, enter new values, and generate a precise mockup.
         </p>
       </div>
 
@@ -150,8 +159,8 @@ export default function IdEditorForm() {
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
             <p className="text-sm">
-              Guest trial used. In a production app, sign-in would be required for additional
-              generations.
+              Guest trial used. To test again, run in the browser console:
+              <code className="ml-1 rounded bg-amber-100 px-1">localStorage.removeItem(&quot;sniffer_id_guest_used&quot;)</code>
             </p>
           </div>
         </div>
@@ -178,13 +187,14 @@ export default function IdEditorForm() {
                 <img
                   src={image}
                   alt="Uploaded ID template"
-                  className="max-h-64 rounded-lg object-contain shadow-sm"
+                  className="max-h-40 rounded-lg object-contain shadow-sm"
                 />
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     setImage(null);
+                    setLayout({});
                     setResultImage(null);
                   }}
                   className="absolute -right-3 -top-3 rounded-full bg-white p-1 shadow hover:bg-slate-100"
@@ -205,10 +215,18 @@ export default function IdEditorForm() {
             )}
           </div>
 
+          {image && (
+            <FieldSelector
+              image={image}
+              layout={layout}
+              onChange={(next) => setLayout(next)}
+            />
+          )}
+
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-900">
               <ImageIcon className="h-5 w-5 text-indigo-600" />
-              Card Details
+              New Card Details
             </h2>
             <div className="grid gap-4 sm:grid-cols-2">
               {(
@@ -268,14 +286,14 @@ export default function IdEditorForm() {
               </button>
               <span className="flex items-center gap-2 text-sm font-medium text-slate-700">
                 <Wand2 className="h-4 w-4" />
-                Enhance clarity
+                Enhance clarity (optional AI pass)
               </span>
             </div>
           </div>
 
           <button
             type="submit"
-            disabled={loading || !image || guestUsed}
+            disabled={loading || !image || guestUsed || !allBoxesMarked}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
             {loading ? (
@@ -304,11 +322,7 @@ export default function IdEditorForm() {
             <div className="space-y-4">
               <div className="overflow-hidden rounded-xl border border-slate-200">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={resultImage}
-                  alt="Generated ID card"
-                  className="w-full object-contain"
-                />
+                <img src={resultImage} alt="Generated ID card" className="w-full object-contain" />
               </div>
               <button
                 type="button"
