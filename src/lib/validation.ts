@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CardFormData } from "./types";
+import type { LayoutMap, BoundingBox } from "./openrouter";
 
 const MAX_FILE_SIZE_MB = 10;
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -60,9 +61,13 @@ export function sanitizeImageDataUri(image: string): string {
   return image;
 }
 
-type LayoutMap = Partial<Record<keyof CardFormData, string | null>>;
+function boxToString(box: BoundingBox): string {
+  const x2 = box.x + box.width;
+  const y2 = box.y + box.height;
+  return `from pixel (${box.x}, ${box.y}) to (${x2}, ${y2})`;
+}
 
-export function buildEditPrompt(fields: CardFormData, layout: LayoutMap = {}): string {
+export function buildErasePrompt(layout: LayoutMap): string {
   const fieldLabels: Record<keyof CardFormData, string> = {
     name: "NAME",
     dob: "DOB",
@@ -71,23 +76,23 @@ export function buildEditPrompt(fields: CardFormData, layout: LayoutMap = {}): s
     address: "ADDRESS",
   };
 
-  const locationHints = Object.entries(fieldLabels)
+  const eraseInstructions = Object.entries(fieldLabels)
     .map(([key, label]) => {
-      const location = layout[key as keyof CardFormData];
-      if (location) {
-        return `- The '${label}' field is located ${location}. Replace it with: ${fields[key as keyof CardFormData]}`;
+      const box = layout[key as keyof CardFormData];
+      if (box) {
+        return `- Erase all text inside the '${label}' field, which is the rectangular area ${boxToString(box)}. Replace it with the original blank background color and texture. Do not write any new text.`;
       }
-      return `- Replace the text in the '${label}' field with: ${fields[key as keyof CardFormData]}`;
+      return null;
     })
+    .filter(Boolean)
     .join("\n");
 
   return [
-    "This is a design mockup of a sample card for testing and prototyping purposes only. It is not a real document.",
-    "Please modify only the specific labeled areas of this sample card mockup. Use the exact locations described below:",
-    locationHints,
-    "Do not change any other text, layout, background, colors, fonts, seals, patterns, or design elements outside these five specific fields.",
-    "Match the existing typography style, size, weight, spacing, and alignment within each field as closely as possible.",
-    "Keep the result photorealistic and consistent with the original mockup style.",
+    "This is a design mockup sample card for prototyping. It is not a real document.",
+    "Your task is to ONLY erase text from specific labeled fields. Do not add, write, or draw any new text.",
+    eraseInstructions,
+    "Preserve all other text, layout, colors, fonts, seals, patterns, and design elements exactly as they are.",
+    "Make the erased areas blend seamlessly with the surrounding blank background.",
     "Do not add watermarks, logos, annotations, or extra graphics.",
     "This is for a design prototype, not a real document.",
   ].join("\n");

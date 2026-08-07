@@ -1,5 +1,5 @@
 import type { CardFormData } from "./types";
-import { buildEditPrompt, buildEnhancePrompt } from "./validation";
+import { buildErasePrompt, buildEnhancePrompt } from "./validation";
 
 const OPENROUTER_IMAGE_API_URL = "https://openrouter.ai/api/v1/images/generations";
 const OPENROUTER_CHAT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -41,27 +41,34 @@ function getHeaders(): Record<string, string> {
   return headers;
 }
 
+export type BoundingBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type LayoutMap = Partial<Record<keyof CardFormData, BoundingBox>>;
+
 type ImageApiResponse = {
   data?: { url?: string; b64_json?: string; revised_prompt?: string }[];
   error?: { message?: string };
 };
 
-type LayoutMap = Partial<Record<keyof CardFormData, string>>;
-
 const LAYOUT_PROMPT = `Analyze this sample card mockup image carefully.
-Locate the visible text labels or fields for: NAME, DOB (date of birth), ISS (issue date), EXP (expiration date), and ADDRESS.
-For each label that you can find, describe its exact location in simple relative terms (e.g. "top-left below the photo", "middle-right area", "bottom section", "upper-right corner").
+Locate the visible text fields for: NAME, DOB (date of birth), ISS (issue date), EXP (expiration date), and ADDRESS.
+For each field, return its bounding box in pixel coordinates relative to the full image.
 Return ONLY a valid JSON object with this exact shape and no extra text:
 {
-  "name": "location description",
-  "dob": "location description",
-  "iss": "location description",
-  "exp": "location description",
-  "address": "location description"
+  "name": {"x": 120, "y": 85, "width": 200, "height": 30},
+  "dob": {"x": 120, "y": 130, "width": 120, "height": 25},
+  "iss": {"x": 300, "y": 130, "width": 120, "height": 25},
+  "exp": {"x": 300, "y": 165, "width": 120, "height": 25},
+  "address": {"x": 120, "y": 210, "width": 250, "height": 40}
 }
 If a field is not visible or cannot be located, set its value to null.`;
 
-async function analyzeCardLayout(imageDataUri: string): Promise<LayoutMap> {
+export async function analyzeCardLayout(imageDataUri: string): Promise<LayoutMap> {
   const model = getVisionModel();
 
   const response = await fetch(OPENROUTER_CHAT_API_URL, {
@@ -159,13 +166,12 @@ async function callImageGenerationApi(
   throw new Error("OpenRouter returned an empty image result.");
 }
 
-export async function editImageWithOpenRouter(
+export async function eraseFieldsWithOpenRouter(
   imageDataUri: string,
-  fields: CardFormData
+  layout: LayoutMap
 ): Promise<string> {
   const model = getModel();
-  const layout = await analyzeCardLayout(imageDataUri);
-  const prompt = buildEditPrompt(fields, layout);
+  const prompt = buildErasePrompt(layout);
   return callImageGenerationApi(imageDataUri, prompt, model);
 }
 
