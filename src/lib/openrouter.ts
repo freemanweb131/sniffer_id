@@ -197,11 +197,12 @@ export async function extractFieldStyles(
 }
 
 /**
- * Step B: After cleaning, AI restores background texture and writes exact typed text
- * to match the style of the remaining printed fields on the card.
+ * AI in-place rewrite: replace text inside marked boxes on the ORIGINAL card image
+ * so new values match the print style of remaining fields (Sex/Wgt/Hgt/Eyes).
+ * Do NOT pre-clean with solid fills — that creates gray patches.
  */
 export async function writeFieldsWithAI(
-  cleanedImageDataUri: string,
+  imageDataUri: string,
   fields: CardFormData,
   layout: LayoutMap
 ): Promise<string> {
@@ -216,26 +217,25 @@ export async function writeFieldsWithAI(
           : key === "address2"
             ? "ADDRESS LINE 2 (city, state, ZIP)"
             : key.toUpperCase();
-      return `- ${label} inside rectangle (${boxLabel(box)}): write EXACTLY "${value}" (character-for-character, no typos, no extra digits/letters).`;
+      return `- ${label} at rectangle (${boxLabel(box)}): replace the existing value with EXACTLY "${value}".`;
     })
     .filter(Boolean)
     .join("\n");
 
   const prompt = [
     "This is a design mockup sample card for prototyping. It is not a real document.",
-    "The marked rectangles were cleaned and currently look like flat blank patches.",
-    "Your job for EACH marked rectangle:",
-    "1) Restore the original background security pattern/texture so the patch blends with the surrounding card (no obvious gray boxes).",
-    "2) Write the new text inside that rectangle so it matches the style of the UNCHANGED printed text still visible on the card (same look as fields like Sex/Wgt/Hgt/Eyes: bold dark sans-serif, similar size/weight/color, slight print look).",
-    "Spelling accuracy is mandatory. Use ONLY the exact strings below.",
-    "CRITICAL: You MUST write BOTH address lines (ADDRESS LINE 1 and ADDRESS LINE 2). Never leave address blank and never keep the old address.",
+    "Edit ONLY the marked value rectangles below. Keep the rest of the card pixel-perfect.",
+    "STYLE RULE (most important): New text MUST look identical to the already-printed values still on the card — especially 'Sex F', 'Wgt 180', 'Hgt 506', 'Eyes BRO'.",
+    "Match their boldness, stroke thickness, black ink color, letter spacing, baseline, and slight print texture.",
+    "BACKGROUND RULE: Keep the original guilloche/security pattern continuously behind the new text. Never leave flat gray/white rectangles or pasted boxes.",
+    "Process for each marked rectangle: seamlessly replace old characters with the new ones as if originally printed there.",
+    "Spelling must be exact (character-for-character). You MUST update BOTH address lines.",
     fieldInstructions,
-    "Do not modify photo, seals, holograms, labels, or any text outside the marked rectangles.",
-    "Do not invent extra text, watermarks, or annotations.",
+    "Do not change the photo, seals, holograms, labels (DOB/ISS/EXP/Sex/etc.), or any unmarked text.",
     "This is for a design prototype, not a real document.",
   ].join("\n");
 
-  return callImageGenerationApi(cleanedImageDataUri, prompt, getModel());
+  return callImageGenerationApi(imageDataUri, prompt, getModel());
 }
 
 /**

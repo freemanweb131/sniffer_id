@@ -5,7 +5,7 @@ import { Upload, Download, Loader2, ImageIcon, AlertTriangle, Wand2, X } from "l
 import FieldSelector from "@/components/FieldSelector";
 import type { CardFormData, GenerateResponse, LayoutMap } from "@/lib/types";
 
-const FREE_TRIAL_KEY = "sniffer_id_guest_used_v9";
+const FREE_TRIAL_KEY = "sniffer_id_guest_used_v10";
 const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address", "address2"];
 
 function getInitialGuestUsed(): boolean {
@@ -151,7 +151,7 @@ export default function IdEditorForm() {
           ID Card Mockup Editor
         </h1>
         <p className="mt-2 text-slate-600">
-          Mark fields, enter values, then we clean those areas and ask AI to rewrite them in matching card style.
+          Mark fields and enter values. AI rewrites those areas in-place to match the card&apos;s printed text style.
         </p>
       </div>
 

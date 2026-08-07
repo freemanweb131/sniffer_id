@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
 import { writeFieldsWithAI, verifyEditedFields } from "@/lib/openrouter";
-import { applyDirectEdit, cleanMarkedFields } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -44,44 +43,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
     const sanitizedImage = sanitizeImageDataUri(image);
 
     const meta = await sharp(Buffer.from(sanitizedImage.split(",")[1], "base64")).metadata();
-    const sourceWidth = meta.width ?? 0;
-    const sourceHeight = meta.height ?? 0;
-    if (!sourceWidth || !sourceHeight) {
+    if (!meta.width || !meta.height) {
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 1: Clean marked fields first (remove old text, leave blank patches).
-    const cleanedImage = await cleanMarkedFields(
-      sanitizedImage,
-      layout,
-      sourceWidth,
-      sourceHeight
-    );
+    // In-place AI rewrite on the ORIGINAL image (no solid-fill clean).
+    // That keeps guilloche intact and matches Sex/Wgt/Hgt/Eyes print style.
+    let resultImage = await writeFieldsWithAI(sanitizedImage, fields, layout);
 
-    // Step 2: Forward cleaned card + exact inputs to AI to restore pattern and write matching text.
-    let resultImage: string;
-    try {
-      resultImage = await writeFieldsWithAI(cleanedImage, fields, layout);
-
-      // Step 3: If AI misspelled/missed fields, fall back to deterministic glyph overlay.
-      const mismatches = await verifyEditedFields(resultImage, fields);
-      if (mismatches.length > 0) {
-        resultImage = await applyDirectEdit(
-          sanitizedImage,
-          fields,
-          layout,
-          sourceWidth,
-          sourceHeight
-        );
-      }
-    } catch {
-      resultImage = await applyDirectEdit(
-        sanitizedImage,
-        fields,
-        layout,
-        sourceWidth,
-        sourceHeight
-      );
+    // If spelling is off, retry AI once with the same style-focused prompt.
+    // Do NOT fall back to solid gray boxes + synthetic fonts — that looks fake.
+    const mismatches = await verifyEditedFields(resultImage, fields);
+    if (mismatches.length > 0) {
+      resultImage = await writeFieldsWithAI(sanitizedImage, fields, layout);
     }
 
     incrementRateLimit(ip);
