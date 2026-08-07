@@ -15,6 +15,17 @@ export interface BoundingBox {
 
 export type LayoutMap = Partial<Record<keyof CardFormData, BoundingBox>>;
 
+export interface FieldStyle {
+  color: string;
+  fontSize: number;
+  fontWeight: number;
+  fontFamily: string;
+  letterSpacing: number;
+  opacity: number;
+}
+
+export type StyleMap = Partial<Record<keyof CardFormData, FieldStyle>>;
+
 export interface GenerateRequest {
   image: string;
   fields: CardFormData;

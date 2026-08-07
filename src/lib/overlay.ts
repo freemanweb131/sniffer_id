@@ -1,9 +1,9 @@
 import sharp, { type Sharp } from "sharp";
-import type { CardFormData, LayoutMap, BoundingBox } from "./types";
+import type { BoundingBox, CardFormData, FieldStyle, LayoutMap, StyleMap } from "./types";
 
 const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
 
-async function resolveImageBuffer(image: string): Promise<Buffer> {
+export async function resolveImageBuffer(image: string): Promise<Buffer> {
   if (image.startsWith("data:image")) {
     const base64 = image.split(",")[1];
     if (!base64) throw new Error("Invalid image data URI.");
@@ -38,7 +38,7 @@ function clampBox(box: BoundingBox, imageWidth: number, imageHeight: number): Bo
   return { x, y, width, height };
 }
 
-function scaleLayout(
+export function scaleLayout(
   layout: LayoutMap,
   sourceWidth: number,
   sourceHeight: number,
@@ -81,8 +81,6 @@ async function sampleBackgroundColor(
     { x: Math.min(imageWidth - 1, box.x + box.width + pad), y: box.y + Math.floor(box.height / 2) },
     { x: box.x + Math.floor(box.width / 2), y: Math.max(0, box.y - pad) },
     { x: box.x + Math.floor(box.width / 2), y: Math.min(imageHeight - 1, box.y + box.height + pad) },
-    { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad) },
-    { x: Math.min(imageWidth - 1, box.x + box.width + pad), y: Math.max(0, box.y - pad) },
   ];
 
   for (const point of samplePoints) {
@@ -94,20 +92,14 @@ async function sampleBackgroundColor(
         .toBuffer({ resolveWithObject: true });
       samples.push({ r: data[0], g: data[1], b: data[2] });
     } catch {
-      // Ignore failed sample points near edges.
+      // Ignore edge sample failures.
     }
   }
 
-  if (samples.length === 0) {
-    return { r: 240, g: 240, b: 240 };
-  }
+  if (samples.length === 0) return { r: 240, g: 240, b: 240 };
 
   const avg = samples.reduce(
-    (acc, sample) => ({
-      r: acc.r + sample.r,
-      g: acc.g + sample.g,
-      b: acc.b + sample.b,
-    }),
+    (acc, sample) => ({ r: acc.r + sample.r, g: acc.g + sample.g, b: acc.b + sample.b }),
     { r: 0, g: 0, b: 0 }
   );
 
@@ -118,68 +110,59 @@ async function sampleBackgroundColor(
   };
 }
 
-function createTextSvg(
+function createStyledTextSvg(
   text: string,
   box: BoundingBox,
   imageWidth: number,
   imageHeight: number,
-  textColor: string
+  style: FieldStyle
 ): string {
-  const fontSize = Math.max(10, Math.min(Math.round(box.height * 0.72), Math.round(box.width / Math.max(text.length * 0.55, 1))));
-  const x = box.x + Math.max(2, Math.round(box.width * 0.03));
-  const y = box.y + Math.round(box.height * 0.72);
+  const maxByHeight = Math.round(box.height * 0.78);
+  const maxByWidth = Math.round(box.width / Math.max(text.length * 0.52, 1));
+  const fontSize = Math.max(9, Math.min(style.fontSize, maxByHeight, maxByWidth));
+  const x = box.x + Math.max(2, Math.round(box.width * 0.02));
+  const y = box.y + Math.round((box.height + fontSize * 0.72) / 2);
 
   return `
     <svg width="${imageWidth}" height="${imageHeight}" xmlns="http://www.w3.org/2000/svg">
       <text
         x="${x}"
         y="${y}"
-        font-family="Arial, Helvetica, DejaVu Sans, sans-serif"
+        font-family="${escapeXml(style.fontFamily)}, Arial, Helvetica, sans-serif"
         font-size="${fontSize}px"
-        font-weight="600"
-        fill="${textColor}"
+        font-weight="${style.fontWeight}"
+        letter-spacing="${style.letterSpacing}px"
+        fill="${escapeXml(style.color)}"
+        fill-opacity="${style.opacity}"
         text-anchor="start"
       >${escapeXml(text)}</text>
     </svg>
   `;
 }
 
-function contrastTextColor(bg: { r: number; g: number; b: number }): string {
-  const luminance = (0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b) / 255;
-  return luminance > 0.55 ? "#111111" : "#FFFFFF";
-}
-
 /**
- * Deterministic correction for selected fields:
- * erase marked regions with sampled background, then draw exact typed text.
+ * Local fallback erase if AI inpaint fails: fill each box with sampled background color.
  */
-export async function applyHybridEdit(
+export async function eraseFieldsLocally(
   imageInput: string,
-  fields: CardFormData,
   layout: LayoutMap,
   sourceWidth: number,
-  sourceHeight: number,
-  keysToFix: (keyof CardFormData)[] = FIELD_KEYS
+  sourceHeight: number
 ): Promise<string> {
   const originalBuffer = await resolveImageBuffer(imageInput);
   const base = sharp(originalBuffer).ensureAlpha();
   const metadata = await base.metadata();
   const imageWidth = metadata.width ?? sourceWidth;
   const imageHeight = metadata.height ?? sourceHeight;
-
   const scaledLayout = scaleLayout(layout, sourceWidth, sourceHeight, imageWidth, imageHeight);
 
   const fillLayers: { input: Buffer; left: number; top: number }[] = [];
-  const textSvgs: Buffer[] = [];
 
-  for (const key of keysToFix) {
+  for (const key of FIELD_KEYS) {
     const rawBox = scaledLayout[key];
-    const value = fields[key];
-    if (!rawBox || !value) continue;
-
+    if (!rawBox) continue;
     const box = clampBox(rawBox, imageWidth, imageHeight);
     const bg = await sampleBackgroundColor(base, box, imageWidth, imageHeight);
-
     const fill = await sharp({
       create: {
         width: box.width,
@@ -190,25 +173,78 @@ export async function applyHybridEdit(
     })
       .png()
       .toBuffer();
-
     fillLayers.push({ input: fill, left: box.x, top: box.y });
-
-    const textColor = contrastTextColor(bg);
-    textSvgs.push(Buffer.from(createTextSvg(value, box, imageWidth, imageHeight, textColor)));
-  }
-
-  if (fillLayers.length === 0) {
-    // Nothing to correct — return original as data URI.
-    const png = await base.png().toBuffer();
-    return `data:image/png;base64,${png.toString("base64")}`;
   }
 
   const erased = await base.composite(fillLayers).png().toBuffer();
+  return `data:image/png;base64,${erased.toString("base64")}`;
+}
 
-  const resultBuffer = await sharp(erased)
-    .composite(textSvgs.map((input) => ({ input, blend: "over" as const })))
+/**
+ * Step 3: Render exact typed text with extracted styles.
+ * Step 4: Soften the text layer slightly so it looks printed (mild blur + opacity).
+ */
+export async function renderStyledText(
+  imageInput: string,
+  fields: CardFormData,
+  layout: LayoutMap,
+  styles: StyleMap,
+  sourceWidth: number,
+  sourceHeight: number
+): Promise<string> {
+  const originalBuffer = await resolveImageBuffer(imageInput);
+  const base = sharp(originalBuffer).ensureAlpha();
+  const metadata = await base.metadata();
+  const imageWidth = metadata.width ?? sourceWidth;
+  const imageHeight = metadata.height ?? sourceHeight;
+  const scaledLayout = scaleLayout(layout, sourceWidth, sourceHeight, imageWidth, imageHeight);
+
+  const textLayers: Buffer[] = [];
+
+  for (const key of FIELD_KEYS) {
+    const rawBox = scaledLayout[key];
+    const value = fields[key];
+    const style = styles[key];
+    if (!rawBox || !value || !style) continue;
+
+    const box = clampBox(rawBox, imageWidth, imageHeight);
+    const svg = createStyledTextSvg(value, box, imageWidth, imageHeight, style);
+    const svgBuffer = Buffer.from(svg);
+
+    // Soften text slightly so it blends into printed card texture.
+    const softened = await sharp(svgBuffer)
+      .blur(0.35)
+      .png()
+      .toBuffer();
+
+    textLayers.push(softened);
+  }
+
+  if (textLayers.length === 0) {
+    throw new Error("No styled text layers could be rendered.");
+  }
+
+  let composed = await base
+    .composite(textLayers.map((input) => ({ input, blend: "over" as const })))
     .png()
     .toBuffer();
 
-  return `data:image/png;base64,${resultBuffer.toString("base64")}`;
+  // Very light noise blend to reduce "digital overlay" look.
+  const noise = await sharp({
+    create: {
+      width: imageWidth,
+      height: imageHeight,
+      channels: 4,
+      background: { r: 128, g: 128, b: 128, alpha: 0.03 },
+    },
+  })
+    .png()
+    .toBuffer();
+
+  composed = await sharp(composed)
+    .composite([{ input: noise, blend: "overlay" }])
+    .png()
+    .toBuffer();
+
+  return `data:image/png;base64,${composed.toString("base64")}`;
 }

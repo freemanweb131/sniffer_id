@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
 import {
-  editImageWithLayout,
-  verifyEditedFields,
+  extractFieldStyles,
+  eraseFieldsWithOpenRouter,
   enhanceImageWithOpenRouter,
 } from "@/lib/openrouter";
-import { applyHybridEdit } from "@/lib/overlay";
+import { eraseFieldsLocally, renderStyledText } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -54,37 +54,28 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 1: AI edits using your exact marked boxes + exact typed text.
-    // Fall back to deterministic overlay if the AI call fails.
-    let resultImage: string;
+    // Step 1: Extract style (font/color/size) from each marked region.
+    const styles = await extractFieldStyles(sanitizedImage, layout);
+
+    // Step 2: AI inpaint — erase old text only (local fill fallback).
+    let erasedImage: string;
     try {
-      resultImage = await editImageWithLayout(sanitizedImage, fields, layout);
-
-      // Step 2: Verify spelling/content with vision OCR.
-      const mismatches = await verifyEditedFields(resultImage, fields);
-
-      // Step 3: Deterministically correct any mistyped/missing fields.
-      if (mismatches.length > 0) {
-        resultImage = await applyHybridEdit(
-          resultImage,
-          fields,
-          layout,
-          sourceWidth,
-          sourceHeight,
-          mismatches
-        );
-      }
+      erasedImage = await eraseFieldsWithOpenRouter(sanitizedImage, layout);
     } catch {
-      resultImage = await applyHybridEdit(
-        sanitizedImage,
-        fields,
-        layout,
-        sourceWidth,
-        sourceHeight
-      );
+      erasedImage = await eraseFieldsLocally(sanitizedImage, layout, sourceWidth, sourceHeight);
     }
 
-    // Step 4: Optional clarity enhancement (preserves text).
+    // Step 3 + 4: Render exact typed text with extracted styles, then soften/blend.
+    // scaleLayout inside renderStyledText maps original mark boxes onto the erased image size.
+    let resultImage = await renderStyledText(
+      erasedImage,
+      fields,
+      layout,
+      styles,
+      sourceWidth,
+      sourceHeight
+    );
+
     if (enhanceClarity) {
       resultImage = await enhanceImageWithOpenRouter(resultImage);
     }
