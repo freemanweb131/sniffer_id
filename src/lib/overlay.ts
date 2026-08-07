@@ -150,16 +150,16 @@ function contrastTextColor(bg: { r: number; g: number; b: number }): string {
 }
 
 /**
- * Deterministic hybrid pipeline:
- * 1) Erase each user-marked field by filling with sampled background color
- * 2) Draw the exact typed text into each box with sharp/SVG
+ * Deterministic correction for selected fields:
+ * erase marked regions with sampled background, then draw exact typed text.
  */
 export async function applyHybridEdit(
   imageInput: string,
   fields: CardFormData,
   layout: LayoutMap,
   sourceWidth: number,
-  sourceHeight: number
+  sourceHeight: number,
+  keysToFix: (keyof CardFormData)[] = FIELD_KEYS
 ): Promise<string> {
   const originalBuffer = await resolveImageBuffer(imageInput);
   const base = sharp(originalBuffer).ensureAlpha();
@@ -172,7 +172,7 @@ export async function applyHybridEdit(
   const fillLayers: { input: Buffer; left: number; top: number }[] = [];
   const textSvgs: Buffer[] = [];
 
-  for (const key of FIELD_KEYS) {
+  for (const key of keysToFix) {
     const rawBox = scaledLayout[key];
     const value = fields[key];
     if (!rawBox || !value) continue;
@@ -198,7 +198,9 @@ export async function applyHybridEdit(
   }
 
   if (fillLayers.length === 0) {
-    throw new Error("No valid field regions were provided for editing.");
+    // Nothing to correct — return original as data URI.
+    const png = await base.png().toBuffer();
+    return `data:image/png;base64,${png.toString("base64")}`;
   }
 
   const erased = await base.composite(fillLayers).png().toBuffer();

@@ -1,6 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
+import sharp from "sharp";
+import {
+  editImageWithLayout,
+  verifyEditedFields,
+  enhanceImageWithOpenRouter,
+} from "@/lib/openrouter";
 import { applyHybridEdit } from "@/lib/overlay";
-import { enhanceImageWithOpenRouter } from "@/lib/openrouter";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -42,29 +47,44 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
     const { image, fields, layout, enhanceClarity } = parseResult.data;
     const sanitizedImage = sanitizeImageDataUri(image);
 
-    // Infer source size from the uploaded image metadata via sharp inside applyHybridEdit.
-    // Pass layout pixel coordinates as provided by the client (relative to original image).
-    const meta = await import("sharp").then(async ({ default: sharp }) => {
-      const base64 = sanitizedImage.split(",")[1];
-      const buffer = Buffer.from(base64, "base64");
-      return sharp(buffer).metadata();
-    });
-
+    const meta = await sharp(Buffer.from(sanitizedImage.split(",")[1], "base64")).metadata();
     const sourceWidth = meta.width ?? 0;
     const sourceHeight = meta.height ?? 0;
     if (!sourceWidth || !sourceHeight) {
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Deterministic pipeline: erase marked regions + draw exact typed text.
-    let resultImage = await applyHybridEdit(
-      sanitizedImage,
-      fields,
-      layout,
-      sourceWidth,
-      sourceHeight
-    );
+    // Step 1: AI edits using your exact marked boxes + exact typed text.
+    // Fall back to deterministic overlay if the AI call fails.
+    let resultImage: string;
+    try {
+      resultImage = await editImageWithLayout(sanitizedImage, fields, layout);
 
+      // Step 2: Verify spelling/content with vision OCR.
+      const mismatches = await verifyEditedFields(resultImage, fields);
+
+      // Step 3: Deterministically correct any mistyped/missing fields.
+      if (mismatches.length > 0) {
+        resultImage = await applyHybridEdit(
+          resultImage,
+          fields,
+          layout,
+          sourceWidth,
+          sourceHeight,
+          mismatches
+        );
+      }
+    } catch {
+      resultImage = await applyHybridEdit(
+        sanitizedImage,
+        fields,
+        layout,
+        sourceWidth,
+        sourceHeight
+      );
+    }
+
+    // Step 4: Optional clarity enhancement (preserves text).
     if (enhanceClarity) {
       resultImage = await enhanceImageWithOpenRouter(resultImage);
     }
