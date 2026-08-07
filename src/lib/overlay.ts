@@ -1,4 +1,4 @@
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import type { BoundingBox, CardFormData, FieldStyle, LayoutMap, StyleMap } from "./types";
 
 const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
@@ -77,9 +77,6 @@ function luminance(r: number, g: number, b: number): number {
   return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
-/**
- * Sample ink color from darkest pixels inside the marked box (original text color).
- */
 function sampleInkColor(
   data: Buffer,
   width: number,
@@ -98,54 +95,107 @@ function sampleInkColor(
     }
   }
 
-  if (pixels.length === 0) return "#1a1a1a";
+  if (pixels.length === 0) return "#111111";
 
   pixels.sort((a, b) => a.lum - b.lum);
-  const inkCount = Math.max(5, Math.floor(pixels.length * 0.12));
+  const inkCount = Math.max(8, Math.floor(pixels.length * 0.1));
   const ink = pixels.slice(0, inkCount);
   const avg = ink.reduce(
     (acc, p) => ({ r: acc.r + p.r, g: acc.g + p.g, b: acc.b + p.b }),
     { r: 0, g: 0, b: 0 }
   );
 
-  return rgbToHex(avg.r / ink.length, avg.g / ink.length, avg.b / ink.length);
+  const r = avg.r / ink.length;
+  const g = avg.g / ink.length;
+  const b = avg.b / ink.length;
+
+  // If "ink" is still bright (bad sample), force dark text for readability.
+  if (luminance(r, g, b) > 140) {
+    return "#111111";
+  }
+
+  return rgbToHex(r, g, b);
 }
 
-/**
- * Texture-preserving erase: vertically blend pixels from the rows just above/below
- * the marked box so guilloche/security patterns stay intact.
- */
-function eraseBoxWithTextureClone(
+function sampleBorderAverage(
   data: Buffer,
   width: number,
   height: number,
   channels: number,
   box: BoundingBox
-): void {
-  const topY = Math.max(0, box.y - 1);
-  const bottomY = Math.min(height - 1, box.y + box.height);
-  const leftX = Math.max(0, box.x - 1);
-  const rightX = Math.min(width - 1, box.x + box.width);
+): { r: number; g: number; b: number } {
+  const samples: number[][] = [];
+  const push = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = (y * width + x) * channels;
+    samples.push([data[idx], data[idx + 1], data[idx + 2]]);
+  };
 
+  for (let x = box.x; x < box.x + box.width; x++) {
+    push(x, Math.max(0, box.y - 1));
+    push(x, Math.min(height - 1, box.y + box.height));
+  }
   for (let y = box.y; y < box.y + box.height; y++) {
-    const ty = (y - box.y) / Math.max(box.height - 1, 1);
+    push(Math.max(0, box.x - 1), y);
+    push(Math.min(width - 1, box.x + box.width), y);
+  }
 
-    for (let x = box.x; x < box.x + box.width; x++) {
-      const tx = (x - box.x) / Math.max(box.width - 1, 1);
-      const idx = (y * width + x) * channels;
+  if (samples.length === 0) return { r: 220, g: 220, b: 210 };
 
-      const topIdx = (topY * width + x) * channels;
-      const bottomIdx = (bottomY * width + x) * channels;
-      const leftIdx = (y * width + leftX) * channels;
-      const rightIdx = (y * width + rightX) * channels;
+  const sum = samples.reduce(
+    (acc, s) => [acc[0] + s[0], acc[1] + s[1], acc[2] + s[2]],
+    [0, 0, 0]
+  );
+  return {
+    r: Math.round(sum[0] / samples.length),
+    g: Math.round(sum[1] / samples.length),
+    b: Math.round(sum[2] / samples.length),
+  };
+}
 
-      for (let c = 0; c < 3; c++) {
-        const vertical = data[topIdx + c] * (1 - ty) + data[bottomIdx + c] * ty;
-        const horizontal = data[leftIdx + c] * (1 - tx) + data[rightIdx + c] * tx;
-        // Prefer vertical clone for ID text lines; mix a little horizontal for edges.
-        data[idx + c] = Math.round(vertical * 0.85 + horizontal * 0.15);
-      }
-    }
+/**
+ * Erase by stretching a clean horizontal strip from just above (or below) the box.
+ * Avoids the vertical smear artifacts from blending top+bottom rows.
+ */
+async function buildStripFill(
+  image: Sharp,
+  box: BoundingBox,
+  _imageWidth: number,
+  imageHeight: number
+): Promise<Buffer> {
+  const stripHeight = Math.max(2, Math.min(4, Math.floor(box.height / 3)));
+  const aboveTop = Math.max(0, box.y - stripHeight);
+  const belowTop = Math.min(imageHeight - stripHeight, box.y + box.height);
+
+  // Prefer the strip above the text line when available.
+  const useAbove = box.y >= stripHeight;
+  const stripTop = useAbove ? aboveTop : belowTop;
+
+  try {
+    const strip = await image
+      .clone()
+      .extract({
+        left: box.x,
+        top: stripTop,
+        width: box.width,
+        height: stripHeight,
+      })
+      .resize(box.width, box.height, { kernel: "nearest", fit: "fill" })
+      .png()
+      .toBuffer();
+    return strip;
+  } catch {
+    const bg = { r: 220, g: 220, b: 210 };
+    return sharp({
+      create: {
+        width: box.width,
+        height: box.height,
+        channels: 3,
+        background: bg,
+      },
+    })
+      .png()
+      .toBuffer();
   }
 }
 
@@ -156,9 +206,9 @@ function createStyledTextSvg(
   imageHeight: number,
   style: FieldStyle
 ): string {
-  const maxByHeight = Math.round(box.height * 0.78);
-  const maxByWidth = Math.round(box.width / Math.max(text.length * 0.55, 1));
-  const fontSize = Math.max(10, Math.min(style.fontSize || maxByHeight, maxByHeight, maxByWidth));
+  const maxByHeight = Math.round(box.height * 0.82);
+  const maxByWidth = Math.round(box.width / Math.max(text.length * 0.58, 1));
+  const fontSize = Math.max(11, Math.min(style.fontSize || maxByHeight, maxByHeight, maxByWidth));
   const x = box.x + Math.max(2, Math.round(box.width * 0.02));
   const y = box.y + Math.round(box.height * 0.5 + fontSize * 0.35);
 
@@ -167,12 +217,12 @@ function createStyledTextSvg(
       <text
         x="${x}"
         y="${y}"
-        font-family="${escapeXml(style.fontFamily)}, Arial, Helvetica, sans-serif"
+        font-family="Arial, Helvetica, DejaVu Sans, sans-serif"
         font-size="${fontSize}px"
-        font-weight="${style.fontWeight}"
-        letter-spacing="${style.letterSpacing}px"
+        font-weight="${style.fontWeight || 700}"
+        letter-spacing="${style.letterSpacing || 0}px"
         fill="${escapeXml(style.color)}"
-        fill-opacity="${Math.min(1, Math.max(0.88, style.opacity))}"
+        fill-opacity="1"
         text-anchor="start"
       >${escapeXml(text)}</text>
     </svg>
@@ -199,15 +249,26 @@ export async function sampleLocalStyles(
     if (!rawBox) continue;
     const box = clampBox(rawBox, width, height);
     const ink = sampleInkColor(data, width, channels, box);
+    const border = sampleBorderAverage(data, width, height, channels, box);
     const ai = aiStyles[key];
 
+    // Ensure readable contrast against local background.
+    let color = ink;
+    if (Math.abs(luminance(border.r, border.g, border.b) - luminance(
+      parseInt(color.slice(1, 3), 16),
+      parseInt(color.slice(3, 5), 16),
+      parseInt(color.slice(5, 7), 16)
+    )) < 40) {
+      color = luminance(border.r, border.g, border.b) > 140 ? "#111111" : "#F5F5F5";
+    }
+
     styles[key] = {
-      color: ink,
-      fontSize: ai?.fontSize && ai.fontSize > 0 ? ai.fontSize : Math.max(10, Math.round(box.height * 0.72)),
-      fontWeight: ai?.fontWeight && ai.fontWeight > 0 ? ai.fontWeight : 600,
-      fontFamily: ai?.fontFamily || "Arial, Helvetica, sans-serif",
-      letterSpacing: ai?.letterSpacing ?? 0,
-      opacity: ai?.opacity ?? 0.96,
+      color,
+      fontSize: Math.max(11, Math.round(box.height * 0.75)),
+      fontWeight: ai?.fontWeight && ai.fontWeight >= 500 ? ai.fontWeight : 700,
+      fontFamily: "Arial, Helvetica, sans-serif",
+      letterSpacing: 0,
+      opacity: 1,
     };
   }
 
@@ -215,7 +276,7 @@ export async function sampleLocalStyles(
 }
 
 /**
- * Step 2 (local): erase marked text while preserving nearby texture/pattern.
+ * Step 2: erase marked text using strip-fill (no vertical smear).
  */
 export async function eraseFieldsLocally(
   imageInput: string,
@@ -224,35 +285,28 @@ export async function eraseFieldsLocally(
   sourceHeight: number
 ): Promise<string> {
   const originalBuffer = await resolveImageBuffer(imageInput);
-  const { data, info } = await sharp(originalBuffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const base = sharp(originalBuffer).ensureAlpha();
+  const metadata = await base.metadata();
+  const imageWidth = metadata.width ?? sourceWidth;
+  const imageHeight = metadata.height ?? sourceHeight;
+  const scaled = scaleLayout(layout, sourceWidth, sourceHeight, imageWidth, imageHeight);
 
-  const width = info.width ?? sourceWidth;
-  const height = info.height ?? sourceHeight;
-  const channels = info.channels ?? 4;
-  const scaled = scaleLayout(layout, sourceWidth, sourceHeight, width, height);
-  const pixels = Buffer.from(data);
+  const layers: { input: Buffer; left: number; top: number }[] = [];
 
   for (const key of FIELD_KEYS) {
     const rawBox = scaled[key];
     if (!rawBox) continue;
-    const box = clampBox(rawBox, width, height);
-    eraseBoxWithTextureClone(pixels, width, height, channels, box);
+    const box = clampBox(rawBox, imageWidth, imageHeight);
+    const fill = await buildStripFill(base, box, imageWidth, imageHeight);
+    layers.push({ input: fill, left: box.x, top: box.y });
   }
 
-  const erased = await sharp(pixels, {
-    raw: { width, height, channels: channels as 3 | 4 },
-  })
-    .png()
-    .toBuffer();
-
+  const erased = await base.composite(layers).png().toBuffer();
   return `data:image/png;base64,${erased.toString("base64")}`;
 }
 
 /**
- * Steps 3 + 4: draw exact typed text with sampled styles, then lightly blend.
+ * Steps 3 + 4: draw exact typed text crisply (no blur that hides letters).
  */
 export async function renderStyledText(
   imageInput: string,
@@ -273,13 +327,12 @@ export async function renderStyledText(
 
   for (const key of FIELD_KEYS) {
     const rawBox = scaledLayout[key];
-    const value = fields[key];
+    const value = fields[key]?.trim();
     const style = styles[key];
     if (!rawBox || !value || !style) continue;
 
     const box = clampBox(rawBox, imageWidth, imageHeight);
     const svg = createStyledTextSvg(value, box, imageWidth, imageHeight, style);
-    // Keep text crisp — no blur that can make letters disappear.
     textLayers.push(Buffer.from(svg));
   }
 
@@ -287,25 +340,8 @@ export async function renderStyledText(
     throw new Error("No styled text layers could be rendered. Remark field boxes and try again.");
   }
 
-  let composed = await base
+  const composed = await base
     .composite(textLayers.map((input) => ({ input, blend: "over" as const })))
-    .png()
-    .toBuffer();
-
-  // Very subtle print-like grain (does not erase text).
-  const noise = await sharp({
-    create: {
-      width: imageWidth,
-      height: imageHeight,
-      channels: 4,
-      background: { r: 128, g: 128, b: 128, alpha: 0.02 },
-    },
-  })
-    .png()
-    .toBuffer();
-
-  composed = await sharp(composed)
-    .composite([{ input: noise, blend: "overlay" }])
     .png()
     .toBuffer();
 

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
-import { extractFieldStyles, enhanceImageWithOpenRouter } from "@/lib/openrouter";
+import { extractFieldStyles } from "@/lib/openrouter";
 import { eraseFieldsLocally, renderStyledText, sampleLocalStyles } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       );
     }
 
-    const { image, fields, layout, enhanceClarity } = parseResult.data;
+    const { image, fields, layout } = parseResult.data;
     const sanitizedImage = sanitizeImageDataUri(image);
 
     const meta = await sharp(Buffer.from(sanitizedImage.split(",")[1], "base64")).metadata();
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Step 1: Extract style — AI hints + local ink-color sampling from your boxes.
+    // Step 1: style extraction (AI optional + local ink sampling).
     let aiStyles = {};
     try {
       aiStyles = await extractFieldStyles(sanitizedImage, layout);
@@ -65,8 +65,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       aiStyles
     );
 
-    // Step 2: LOCAL texture-preserving erase (no AI inpaint).
-    // AI erase was destroying guilloche patterns and leaving artifacts.
+    // Step 2: local strip-fill erase (keeps coordinates exact, avoids AI smear).
     const erasedImage = await eraseFieldsLocally(
       sanitizedImage,
       layout,
@@ -74,8 +73,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       sourceHeight
     );
 
-    // Step 3 + 4: Render exact typed text with sampled styles, then light grain blend.
-    let resultImage = await renderStyledText(
+    // Step 3+4: crisp deterministic text overlay. No AI post-enhance (it was destroying results).
+    const resultImage = await renderStyledText(
       erasedImage,
       fields,
       layout,
@@ -83,10 +82,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       sourceWidth,
       sourceHeight
     );
-
-    if (enhanceClarity) {
-      resultImage = await enhanceImageWithOpenRouter(resultImage);
-    }
 
     incrementRateLimit(ip);
 
