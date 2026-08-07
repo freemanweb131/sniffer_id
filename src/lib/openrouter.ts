@@ -197,31 +197,93 @@ export async function extractFieldStyles(
 }
 
 /**
- * Step 2: AI inpaint — erase old text only. Do not write any new characters.
+ * Step B: After cleaning, AI restores background texture and writes exact typed text
+ * to match the style of the remaining printed fields on the card.
  */
-export async function eraseFieldsWithOpenRouter(
-  imageDataUri: string,
+export async function writeFieldsWithAI(
+  cleanedImageDataUri: string,
+  fields: CardFormData,
   layout: LayoutMap
 ): Promise<string> {
-  const eraseInstructions = FIELD_KEYS
+  const fieldInstructions = FIELD_KEYS
     .map((key) => {
       const box = layout[key];
-      if (!box) return null;
-      return `- Erase ALL text inside the ${key.toUpperCase()} rectangle (${boxLabel(box)}). Fill that area with the original seamless background color/texture. Do NOT write any new letters, digits, or symbols.`;
+      const value = fields[key]?.trim();
+      if (!box || !value) return null;
+      return `- ${key.toUpperCase()} inside rectangle (${boxLabel(box)}): write EXACTLY "${value}" (character-for-character, no typos, no extra digits/letters).`;
     })
     .filter(Boolean)
     .join("\n");
 
   const prompt = [
     "This is a design mockup sample card for prototyping. It is not a real document.",
-    "Your ONLY job is background inpainting: remove text from the marked rectangles and restore blank background.",
-    eraseInstructions,
-    "Do not change anything outside those rectangles.",
-    "Do not add watermarks, labels, annotations, or new text of any kind.",
+    "The marked rectangles were cleaned and currently look like flat blank patches.",
+    "Your job for EACH marked rectangle:",
+    "1) Restore the original background security pattern/texture so the patch blends with the surrounding card (no obvious gray boxes).",
+    "2) Write the new text inside that rectangle so it matches the style of the UNCHANGED printed text still visible on the card (same look as fields like Sex/Wgt/Hgt/Eyes: bold dark sans-serif, similar size/weight/color, slight print look).",
+    "Spelling accuracy is mandatory. Use ONLY the exact strings below.",
+    fieldInstructions,
+    "Do not modify photo, seals, holograms, labels, or any text outside the marked rectangles.",
+    "Do not invent extra text, watermarks, or annotations.",
     "This is for a design prototype, not a real document.",
   ].join("\n");
 
-  return callImageGenerationApi(imageDataUri, prompt, getModel());
+  return callImageGenerationApi(cleanedImageDataUri, prompt, getModel());
+}
+
+/**
+ * OCR check: return field keys that do not match expected typed values.
+ */
+export async function verifyEditedFields(
+  imageDataUri: string,
+  fields: CardFormData
+): Promise<(keyof CardFormData)[]> {
+  const expected = FIELD_KEYS.map((key) => `- ${key}: "${fields[key]}"`).join("\n");
+
+  const prompt = [
+    "This is a sample card mockup. Read NAME, DOB, ISS, EXP, and ADDRESS values.",
+    "Return ONLY JSON: {\"mismatches\":[\"name\"]}",
+    "Include a key in mismatches only if visible text is missing, incomplete, or different from expected.",
+    "If all match, return {\"mismatches\":[]}.",
+    "Expected:",
+    expected,
+  ].join("\n");
+
+  const response = await fetch(OPENROUTER_CHAT_API_URL, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({
+      model: getVisionModel(),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageDataUri } },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) return [];
+
+  const data = (await response.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  const content = data.choices?.[0]?.message?.content ?? "";
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return [];
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as { mismatches?: string[] };
+    const valid = new Set(FIELD_KEYS);
+    return (parsed.mismatches ?? []).filter((key): key is keyof CardFormData =>
+      valid.has(key as keyof CardFormData)
+    );
+  } catch {
+    return [];
+  }
 }
 
 export async function enhanceImageWithOpenRouter(imageDataUri: string): Promise<string> {

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import sharp from "sharp";
-import { applyDirectEdit } from "@/lib/overlay";
+import { writeFieldsWithAI, verifyEditedFields } from "@/lib/openrouter";
+import { applyDirectEdit, cleanMarkedFields } from "@/lib/overlay";
 import { checkRateLimit, incrementRateLimit } from "@/lib/rate-limit";
 import { generateRequestSchema, sanitizeImageDataUri } from "@/lib/validation";
 import type { GenerateResponse } from "@/lib/types";
@@ -49,15 +50,39 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
       throw new Error("Could not read uploaded image dimensions.");
     }
 
-    // Direct pipeline only: sample colors → solid erase → glyph-path text overlay.
-    // No AI inpaint/write (those caused smear + barcode artifacts on Vercel).
-    const resultImage = await applyDirectEdit(
+    // Step 1: Clean marked fields first (remove old text, leave blank patches).
+    const cleanedImage = await cleanMarkedFields(
       sanitizedImage,
-      fields,
       layout,
       sourceWidth,
       sourceHeight
     );
+
+    // Step 2: Forward cleaned card + exact inputs to AI to restore pattern and write matching text.
+    let resultImage: string;
+    try {
+      resultImage = await writeFieldsWithAI(cleanedImage, fields, layout);
+
+      // Step 3: If AI misspelled/missed fields, fall back to deterministic glyph overlay.
+      const mismatches = await verifyEditedFields(resultImage, fields);
+      if (mismatches.length > 0) {
+        resultImage = await applyDirectEdit(
+          sanitizedImage,
+          fields,
+          layout,
+          sourceWidth,
+          sourceHeight
+        );
+      }
+    } catch {
+      resultImage = await applyDirectEdit(
+        sanitizedImage,
+        fields,
+        layout,
+        sourceWidth,
+        sourceHeight
+      );
+    }
 
     incrementRateLimit(ip);
 

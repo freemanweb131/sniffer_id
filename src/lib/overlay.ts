@@ -176,10 +176,60 @@ function textPathSvg(
 }
 
 /**
- * Direct deterministic pipeline:
- * 1) Sample paper + ink colors from each user box
- * 2) Fill box with solid paper color (clean erase)
- * 3) Draw exact typed text as vector glyph paths (no missing-font artifacts)
+ * Step A: Clean marked fields only (solid paper fill). Returns a blanked card ready for AI rewrite.
+ */
+export async function cleanMarkedFields(
+  imageInput: string,
+  layout: LayoutMap,
+  sourceWidth: number,
+  sourceHeight: number
+): Promise<string> {
+  const originalBuffer = await resolveImageBuffer(imageInput);
+
+  const { data, info } = await sharp(originalBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const width = info.width ?? sourceWidth;
+  const height = info.height ?? sourceHeight;
+  const channels = info.channels ?? 4;
+  const scaled = scaleLayout(layout, sourceWidth, sourceHeight, width, height);
+
+  const fillLayers: { input: Buffer; left: number; top: number }[] = [];
+
+  for (const key of FIELD_KEYS) {
+    const rawBox = scaled[key];
+    if (!rawBox) continue;
+
+    const box = clampBox(rawBox, width, height);
+    const { paper } = samplePaperAndInk(data, width, channels, box);
+
+    const fill = await sharp({
+      create: {
+        width: box.width,
+        height: box.height,
+        channels: 3,
+        background: paper,
+      },
+    })
+      .png()
+      .toBuffer();
+
+    fillLayers.push({ input: fill, left: box.x, top: box.y });
+  }
+
+  if (fillLayers.length === 0) {
+    throw new Error("No valid marked fields to clean.");
+  }
+
+  const cleaned = await sharp(originalBuffer).ensureAlpha().composite(fillLayers).png().toBuffer();
+  return `data:image/png;base64,${cleaned.toString("base64")}`;
+}
+
+/**
+ * Deterministic fallback:
+ * clean + draw exact typed text as vector glyph paths.
  */
 export async function applyDirectEdit(
   imageInput: string,
