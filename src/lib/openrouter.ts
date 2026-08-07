@@ -3,7 +3,7 @@ import type { BoundingBox, CardFormData, FieldStyle, LayoutMap, StyleMap } from 
 const OPENROUTER_IMAGE_API_URL = "https://openrouter.ai/api/v1/images/generations";
 const OPENROUTER_CHAT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
+const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address", "address2"];
 
 function getApiKey(): string {
   const key = process.env.OPENROUTER_API_KEY;
@@ -210,7 +210,13 @@ export async function writeFieldsWithAI(
       const box = layout[key];
       const value = fields[key]?.trim();
       if (!box || !value) return null;
-      return `- ${key.toUpperCase()} inside rectangle (${boxLabel(box)}): write EXACTLY "${value}" (character-for-character, no typos, no extra digits/letters).`;
+      const label =
+        key === "address"
+          ? "ADDRESS LINE 1 (street)"
+          : key === "address2"
+            ? "ADDRESS LINE 2 (city, state, ZIP)"
+            : key.toUpperCase();
+      return `- ${label} inside rectangle (${boxLabel(box)}): write EXACTLY "${value}" (character-for-character, no typos, no extra digits/letters).`;
     })
     .filter(Boolean)
     .join("\n");
@@ -222,6 +228,7 @@ export async function writeFieldsWithAI(
     "1) Restore the original background security pattern/texture so the patch blends with the surrounding card (no obvious gray boxes).",
     "2) Write the new text inside that rectangle so it matches the style of the UNCHANGED printed text still visible on the card (same look as fields like Sex/Wgt/Hgt/Eyes: bold dark sans-serif, similar size/weight/color, slight print look).",
     "Spelling accuracy is mandatory. Use ONLY the exact strings below.",
+    "CRITICAL: You MUST write BOTH address lines (ADDRESS LINE 1 and ADDRESS LINE 2). Never leave address blank and never keep the old address.",
     fieldInstructions,
     "Do not modify photo, seals, holograms, labels, or any text outside the marked rectangles.",
     "Do not invent extra text, watermarks, or annotations.",
@@ -241,9 +248,10 @@ export async function verifyEditedFields(
   const expected = FIELD_KEYS.map((key) => `- ${key}: "${fields[key]}"`).join("\n");
 
   const prompt = [
-    "This is a sample card mockup. Read NAME, DOB, ISS, EXP, and ADDRESS values.",
-    "Return ONLY JSON: {\"mismatches\":[\"name\"]}",
+    "This is a sample card mockup. Read NAME, DOB, ISS, EXP, ADDRESS LINE 1 (street), and ADDRESS LINE 2 (city/state/ZIP).",
+    "Return ONLY JSON: {\"mismatches\":[\"address\",\"address2\"]}",
     "Include a key in mismatches only if visible text is missing, incomplete, or different from expected.",
+    "Pay special attention to both address lines — if either is blank or still shows old text, include it.",
     "If all match, return {\"mismatches\":[]}.",
     "Expected:",
     expected,

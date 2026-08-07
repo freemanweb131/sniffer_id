@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BoundingBox, CardFormData, LayoutMap } from "@/lib/types";
 
-const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
+const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address", "address2"];
 
 const FIELD_COLORS: Record<keyof CardFormData, string> = {
   name: "#4f46e5",
@@ -11,6 +11,7 @@ const FIELD_COLORS: Record<keyof CardFormData, string> = {
   iss: "#d97706",
   exp: "#dc2626",
   address: "#7c3aed",
+  address2: "#0ea5e9",
 };
 
 const FIELD_LABELS: Record<keyof CardFormData, string> = {
@@ -18,7 +19,8 @@ const FIELD_LABELS: Record<keyof CardFormData, string> = {
   dob: "DOB",
   iss: "ISS",
   exp: "EXP",
-  address: "ADDRESS",
+  address: "ADDR1",
+  address2: "ADDR2",
 };
 
 type Props = {
@@ -165,8 +167,8 @@ export default function FieldSelector({ image, layout, onChange }: Props) {
       <div>
         <h2 className="text-lg font-semibold text-slate-900">Mark Fields on Image</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Select a field, then drag tightly around ONLY the value text (not labels like ISS/EXP).
-          Marked: {markedCount}/5
+          Select a field, then drag tightly around ONLY the value text (not labels).
+          Mark street as ADDR1 and city/state/ZIP as ADDR2. Marked: {markedCount}/6
         </p>
       </div>
 

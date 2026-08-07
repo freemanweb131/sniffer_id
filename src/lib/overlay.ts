@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { parse as parseFont, type Font } from "opentype.js";
 import type { BoundingBox, CardFormData, LayoutMap } from "./types";
 
-const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
+const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address", "address2"];
 
 let cachedFont: Font | null = null;
 

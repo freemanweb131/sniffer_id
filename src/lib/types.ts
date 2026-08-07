@@ -4,6 +4,7 @@ export interface CardFormData {
   iss: string;
   exp: string;
   address: string;
+  address2: string;
 }
 
 export interface BoundingBox {

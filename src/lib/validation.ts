@@ -3,6 +3,12 @@ import { z } from "zod";
 const MAX_FILE_SIZE_MB = 10;
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
+const addressLine = z
+  .string()
+  .min(1, "Address line is required")
+  .max(200, "Address must be under 200 characters")
+  .regex(/^[\p{L}\p{M}\d\s.,#'/-]+$/u, "Address contains invalid characters");
+
 export const cardFormSchema = z.object({
   name: z
     .string()
@@ -24,11 +30,8 @@ export const cardFormSchema = z.object({
     .min(1, "Expiration date is required")
     .max(50, "Expiration date must be under 50 characters")
     .regex(/^[\w\/\.\s-]+$/, "Expiration date format contains invalid characters"),
-  address: z
-    .string()
-    .min(1, "Address is required")
-    .max(200, "Address must be under 200 characters")
-    .regex(/^[\p{L}\p{M}\d\s.,#'/-]+$/u, "Address contains invalid characters"),
+  address: addressLine,
+  address2: addressLine,
 });
 
 const boundingBoxSchema = z.object({
@@ -44,6 +47,7 @@ export const layoutSchema = z.object({
   iss: boundingBoxSchema,
   exp: boundingBoxSchema,
   address: boundingBoxSchema,
+  address2: boundingBoxSchema,
 });
 
 export const generateRequestSchema = z.object({

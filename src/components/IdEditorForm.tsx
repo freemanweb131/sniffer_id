@@ -5,8 +5,8 @@ import { Upload, Download, Loader2, ImageIcon, AlertTriangle, Wand2, X } from "l
 import FieldSelector from "@/components/FieldSelector";
 import type { CardFormData, GenerateResponse, LayoutMap } from "@/lib/types";
 
-const FREE_TRIAL_KEY = "sniffer_id_guest_used_v8";
-const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address"];
+const FREE_TRIAL_KEY = "sniffer_id_guest_used_v9";
+const FIELD_KEYS: (keyof CardFormData)[] = ["name", "dob", "iss", "exp", "address", "address2"];
 
 function getInitialGuestUsed(): boolean {
   if (typeof window === "undefined") return false;
@@ -19,6 +19,7 @@ const initialFields: CardFormData = {
   iss: "",
   exp: "",
   address: "",
+  address2: "",
 };
 
 export default function IdEditorForm() {
@@ -90,7 +91,7 @@ export default function IdEditorForm() {
     }
 
     if (!allBoxesMarked) {
-      setError("Please mark all 5 fields on the image (NAME, DOB, ISS, EXP, ADDRESS) by dragging boxes.");
+      setError("Please mark all 6 fields on the image (NAME, DOB, ISS, EXP, ADDR1, ADDR2) by dragging boxes.");
       return;
     }
 
@@ -254,7 +255,7 @@ export default function IdEditorForm() {
               ))}
               <div className="space-y-1 sm:col-span-2">
                 <label htmlFor="address" className="block text-sm font-medium text-slate-700">
-                  Address
+                  Street Address (ADDR1)
                 </label>
                 <input
                   id="address"
@@ -262,7 +263,21 @@ export default function IdEditorForm() {
                   value={fields.address}
                   onChange={(e) => handleFieldChange("address", e.target.value)}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  placeholder="Street address"
+                  placeholder="19151 OAKFIELD ST"
+                  required
+                />
+              </div>
+              <div className="space-y-1 sm:col-span-2">
+                <label htmlFor="address2" className="block text-sm font-medium text-slate-700">
+                  City, State, ZIP (ADDR2)
+                </label>
+                <input
+                  id="address2"
+                  type="text"
+                  value={fields.address2}
+                  onChange={(e) => handleFieldChange("address2", e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  placeholder="DETROIT, MI 48235-2211"
                   required
                 />
               </div>
