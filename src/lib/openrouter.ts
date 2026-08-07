@@ -12,7 +12,7 @@ function getApiKey(): string {
 }
 
 function getModel(): string {
-  return process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash-image";
+  return process.env.OPENROUTER_MODEL || "microsoft/mai-image-2.5-edit";
 }
 
 function getUpscaleModel(): string {
