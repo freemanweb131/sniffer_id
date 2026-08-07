@@ -36,16 +36,51 @@ function getHeaders(): Record<string, string> {
   return headers;
 }
 
-function extractImageUrl(content: string | null | undefined): string | null {
+type MessageContent =
+  | string
+  | { type: "text"; text?: string }
+  | { type: "image_url"; image_url?: { url?: string } }
+  | { type: "image"; source?: { data?: string }; data?: string }
+  | Record<string, unknown>;
+
+function extractImageUrl(content: MessageContent | MessageContent[] | null | undefined): string | null {
   if (!content) return null;
+
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (typeof item === "object" && item !== null) {
+        if ("image_url" in item && item.image_url && typeof item.image_url === "object") {
+          const url = (item.image_url as { url?: string }).url;
+          if (url) return url;
+        }
+        if ("image" in item && item.image && typeof item.image === "object") {
+          const imageData = (item.image as { url?: string; data?: string }).url ?? (item.image as { data?: string }).data;
+          if (imageData) return imageData;
+        }
+        if ("source" in item && item.source && typeof item.source === "object") {
+          const data = (item.source as { data?: string }).data;
+          if (data) return data;
+        }
+      }
+      const nested = extractImageUrl(item);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  if (typeof content !== "string") return null;
+
+  const dataUriMatch = content.match(/data:image\/(?:jpeg|png|webp|jpg);base64,[A-Za-z0-9+/=]+/);
+  if (dataUriMatch) return dataUriMatch[0];
 
   const markdownMatch = content.match(/!\[.*?\]\((.*?)\)/);
   if (markdownMatch) return markdownMatch[1];
 
-  const urlMatch = content.match(/(https?:\/\/[^\s\"<>{}|\^`\[\]]+)/);
-  if (urlMatch) return urlMatch[1];
+  const imageUrlMatch = content.match(/(https?:\/\/[^\s\"<>{}|\^`\[\]]+\.(?:png|jpe?g|webp))/i);
+  if (imageUrlMatch) return imageUrlMatch[1];
 
-  if (content.startsWith("data:image")) return content;
+  const genericUrlMatch = content.match(/(https?:\/\/[^\s\"<>{}|\^`\[\]]+)/);
+  if (genericUrlMatch) return genericUrlMatch[1];
 
   return null;
 }
@@ -78,7 +113,7 @@ async function callImageModel(
   }
 
   const data = (await response.json()) as {
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: { content?: MessageContent | MessageContent[] } }[];
     error?: { message?: string };
   };
 
@@ -90,9 +125,9 @@ async function callImageModel(
   const imageUrl = extractImageUrl(content);
 
   if (!imageUrl) {
-    const preview = content?.slice(0, 200) ?? "empty";
+    const preview = typeof content === "string" ? content.slice(0, 300) : JSON.stringify(content).slice(0, 300);
     throw new Error(
-      `No image was returned by the model. The model may not support image editing, or it refused the request. Response preview: "${preview}"`
+      `No image was returned by the model. Response preview: "${preview}"`
     );
   }
 
