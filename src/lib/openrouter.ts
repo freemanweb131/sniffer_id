@@ -12,7 +12,7 @@ function getApiKey(): string {
 }
 
 function getModel(): string {
-  return process.env.OPENROUTER_MODEL || "microsoft/mai-image-2.5-pro";
+  return process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash-image";
 }
 
 function getUpscaleModel(): string {
@@ -50,13 +50,11 @@ function extractImageUrl(content: string | null | undefined): string | null {
   return null;
 }
 
-export async function editImageWithOpenRouter(
+async function callImageModel(
   imageDataUri: string,
-  fields: CardFormData
+  prompt: string,
+  model: string
 ): Promise<string> {
-  const model = getModel();
-  const prompt = buildEditPrompt(fields);
-
   const response = await fetch(OPENROUTER_API_URL, {
     method: "POST",
     headers: getHeaders(),
@@ -92,53 +90,26 @@ export async function editImageWithOpenRouter(
   const imageUrl = extractImageUrl(content);
 
   if (!imageUrl) {
-    throw new Error("No image was returned by the model. The model may not support image editing.");
+    const preview = content?.slice(0, 200) ?? "empty";
+    throw new Error(
+      `No image was returned by the model. The model may not support image editing, or it refused the request. Response preview: "${preview}"`
+    );
   }
 
   return imageUrl;
 }
 
+export async function editImageWithOpenRouter(
+  imageDataUri: string,
+  fields: CardFormData
+): Promise<string> {
+  const model = getModel();
+  const prompt = buildEditPrompt(fields);
+  return callImageModel(imageDataUri, prompt, model);
+}
+
 export async function enhanceImageWithOpenRouter(imageDataUri: string): Promise<string> {
   const model = getUpscaleModel();
   const prompt = buildEnhancePrompt();
-
-  const response = await fetch(OPENROUTER_API_URL, {
-    method: "POST",
-    headers: getHeaders(),
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageDataUri } },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`OpenRouter upscale request failed: ${response.status} ${text}`);
-  }
-
-  const data = (await response.json()) as {
-    choices?: { message?: { content?: string } }[];
-    error?: { message?: string };
-  };
-
-  if (data.error?.message) {
-    throw new Error(`OpenRouter upscale error: ${data.error.message}`);
-  }
-
-  const content = data.choices?.[0]?.message?.content;
-  const imageUrl = extractImageUrl(content);
-
-  if (!imageUrl) {
-    throw new Error("No enhanced image was returned by the model.");
-  }
-
-  return imageUrl;
+  return callImageModel(imageDataUri, prompt, model);
 }
