@@ -60,15 +60,31 @@ export function sanitizeImageDataUri(image: string): string {
   return image;
 }
 
-export function buildEditPrompt(fields: CardFormData): string {
+type LayoutMap = Partial<Record<keyof CardFormData, string | null>>;
+
+export function buildEditPrompt(fields: CardFormData, layout: LayoutMap = {}): string {
+  const fieldLabels: Record<keyof CardFormData, string> = {
+    name: "NAME",
+    dob: "DOB",
+    iss: "ISS",
+    exp: "EXP",
+    address: "ADDRESS",
+  };
+
+  const locationHints = Object.entries(fieldLabels)
+    .map(([key, label]) => {
+      const location = layout[key as keyof CardFormData];
+      if (location) {
+        return `- The '${label}' field is located ${location}. Replace it with: ${fields[key as keyof CardFormData]}`;
+      }
+      return `- Replace the text in the '${label}' field with: ${fields[key as keyof CardFormData]}`;
+    })
+    .join("\n");
+
   return [
     "This is a design mockup of a sample card for testing and prototyping purposes only. It is not a real document.",
-    "Please modify only the specific labeled areas of this sample card mockup:",
-    `- Replace only the text in the 'NAME' field with: ${fields.name}`,
-    `- Replace only the text in the 'DOB' field with: ${fields.dob}`,
-    `- Replace only the text in the 'ISS' field with: ${fields.iss}`,
-    `- Replace only the text in the 'EXP' field with: ${fields.exp}`,
-    `- Replace only the text in the 'ADDRESS' field with: ${fields.address}`,
+    "Please modify only the specific labeled areas of this sample card mockup. Use the exact locations described below:",
+    locationHints,
     "Do not change any other text, layout, background, colors, fonts, seals, patterns, or design elements outside these five specific fields.",
     "Match the existing typography style, size, weight, spacing, and alignment within each field as closely as possible.",
     "Keep the result photorealistic and consistent with the original mockup style.",
