@@ -1,7 +1,7 @@
 import type { CardFormData } from "./types";
 import { buildEditPrompt, buildEnhancePrompt } from "./validation";
 
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_IMAGE_API_URL = "https://openrouter.ai/api/v1/images/generations";
 
 function getApiKey(): string {
   const key = process.env.OPENROUTER_API_KEY;
@@ -36,102 +36,53 @@ function getHeaders(): Record<string, string> {
   return headers;
 }
 
-type MessageContent =
-  | string
-  | { type: "text"; text?: string }
-  | { type: "image_url"; image_url?: { url?: string } }
-  | { type: "image"; source?: { data?: string }; data?: string }
-  | Record<string, unknown>;
+type ImageApiResponse = {
+  data?: { url?: string; b64_json?: string; revised_prompt?: string }[];
+  error?: { message?: string };
+};
 
-function extractImageUrl(content: MessageContent | MessageContent[] | null | undefined): string | null {
-  if (!content) return null;
-
-  if (Array.isArray(content)) {
-    for (const item of content) {
-      if (typeof item === "object" && item !== null) {
-        if ("image_url" in item && item.image_url && typeof item.image_url === "object") {
-          const url = (item.image_url as { url?: string }).url;
-          if (url) return url;
-        }
-        if ("image" in item && item.image && typeof item.image === "object") {
-          const imageData = (item.image as { url?: string; data?: string }).url ?? (item.image as { data?: string }).data;
-          if (imageData) return imageData;
-        }
-        if ("source" in item && item.source && typeof item.source === "object") {
-          const data = (item.source as { data?: string }).data;
-          if (data) return data;
-        }
-      }
-      const nested = extractImageUrl(item);
-      if (nested) return nested;
-    }
-    return null;
-  }
-
-  if (typeof content !== "string") return null;
-
-  const dataUriMatch = content.match(/data:image\/(?:jpeg|png|webp|jpg);base64,[A-Za-z0-9+/=]+/);
-  if (dataUriMatch) return dataUriMatch[0];
-
-  const markdownMatch = content.match(/!\[.*?\]\((.*?)\)/);
-  if (markdownMatch) return markdownMatch[1];
-
-  const imageUrlMatch = content.match(/(https?:\/\/[^\s\"<>{}|\^`\[\]]+\.(?:png|jpe?g|webp))/i);
-  if (imageUrlMatch) return imageUrlMatch[1];
-
-  const genericUrlMatch = content.match(/(https?:\/\/[^\s\"<>{}|\^`\[\]]+)/);
-  if (genericUrlMatch) return genericUrlMatch[1];
-
-  return null;
-}
-
-async function callImageModel(
+async function callImageGenerationApi(
   imageDataUri: string,
   prompt: string,
   model: string
 ): Promise<string> {
-  const response = await fetch(OPENROUTER_API_URL, {
+  const response = await fetch(OPENROUTER_IMAGE_API_URL, {
     method: "POST",
     headers: getHeaders(),
     body: JSON.stringify({
       model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageDataUri } },
-          ],
-        },
-      ],
+      prompt,
+      n: 1,
+      input_references: [imageDataUri],
+      output_format: "png",
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenRouter request failed: ${response.status} ${text}`);
+    throw new Error(`OpenRouter image request failed: ${response.status} ${text}`);
   }
 
-  const data = (await response.json()) as {
-    choices?: { message?: { content?: MessageContent | MessageContent[] } }[];
-    error?: { message?: string };
-  };
+  const data = (await response.json()) as ImageApiResponse;
 
   if (data.error?.message) {
-    throw new Error(`OpenRouter error: ${data.error.message}`);
+    throw new Error(`OpenRouter image error: ${data.error.message}`);
   }
 
-  const content = data.choices?.[0]?.message?.content;
-  const imageUrl = extractImageUrl(content);
-
-  if (!imageUrl) {
-    const preview = typeof content === "string" ? content.slice(0, 300) : JSON.stringify(content).slice(0, 300);
-    throw new Error(
-      `No image was returned by the model. Response preview: "${preview}"`
-    );
+  const result = data.data?.[0];
+  if (!result) {
+    throw new Error("No image data returned by OpenRouter.");
   }
 
-  return imageUrl;
+  if (result.b64_json) {
+    return `data:image/png;base64,${result.b64_json}`;
+  }
+
+  if (result.url) {
+    return result.url;
+  }
+
+  throw new Error("OpenRouter returned an empty image result.");
 }
 
 export async function editImageWithOpenRouter(
@@ -140,11 +91,11 @@ export async function editImageWithOpenRouter(
 ): Promise<string> {
   const model = getModel();
   const prompt = buildEditPrompt(fields);
-  return callImageModel(imageDataUri, prompt, model);
+  return callImageGenerationApi(imageDataUri, prompt, model);
 }
 
 export async function enhanceImageWithOpenRouter(imageDataUri: string): Promise<string> {
   const model = getUpscaleModel();
   const prompt = buildEnhancePrompt();
-  return callImageModel(imageDataUri, prompt, model);
+  return callImageGenerationApi(imageDataUri, prompt, model);
 }
